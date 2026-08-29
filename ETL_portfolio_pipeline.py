@@ -2,10 +2,11 @@ import yfinance as yf
 import pandas as pd
 import os
 import time
+import json
 from datetime import datetime, timedelta
 import subprocess
 from sqlalchemy import func, text
-from database import init_db, get_db_session, StockPrice, engine, DelistedTicker
+from database import init_db, get_db_session, StockPrice, engine, DelistedTicker, ETLMetadata
 
 # ----------------------------
 # CONFIG
@@ -248,6 +249,23 @@ def main():
             f.write(f"{datetime.now()}: Failed stocks: {failed_stocks}\n")
     else:
         print("\nAll stocks updated successfully.")
+    
+    session = get_db_session()
+    try:
+        session.merge(ETLMetadata(key="last_full_etl_run", value=datetime.now().isoformat(), updated_at=datetime.now().date()))
+        session.commit()
+        print("ETL metadata saved.")
+    except Exception as e:
+        print(f"Failed to save ETL metadata: {e}")
+    finally:
+        session.close()
+    
+    try:
+        with open("etl_metadata.json", "w") as f:
+            json.dump({"last_full_etl_run": datetime.now().isoformat()}, f)
+        print("ETL metadata JSON saved.")
+    except Exception as e:
+        print(f"Failed to save ETL metadata JSON: {e}")
 
     # 3. Update Covariance Estimates
     print(f"\n{'='*40}")

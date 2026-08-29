@@ -111,6 +111,12 @@ class DelistedTicker(Base):
     reason = Column(String)
     date_added = Column(Date)
 
+class ETLMetadata(Base):
+    __tablename__ = "etl_metadata"
+    key = Column(String, primary_key=True)
+    value = Column(String)
+    updated_at = Column(Date)
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 

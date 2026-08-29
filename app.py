@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import os
 import sys
+import json
+from datetime import datetime
 
 # Ensure src modules can be resolved
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -37,14 +39,40 @@ def get_use_case():
     try:
         from src.adapters.persistence.sql_repository import SQLStockPriceRepository
         repo = SQLStockPriceRepository()
-        # Quick check: can we actually connect?
         repo.get_returns_df()
-        return PortfolioCalculationUseCase(stock_repo=repo)
+        return PortfolioCalculationUseCase(stock_repo=repo), "sql"
     except Exception:
-        # Fallback to CSV-based repository (Streamlit Cloud / no DB)
         from src.adapters.persistence.csv_repository import CSVStockPriceRepository
         repo = CSVStockPriceRepository(csv_path="returns.csv")
-        return PortfolioCalculationUseCase(stock_repo=repo)
+        return PortfolioCalculationUseCase(stock_repo=repo), "csv"
+
+def get_last_etl_timestamp(repo_type: str) -> str:
+    if repo_type == "sql":
+        try:
+            from database import get_db_session, ETLMetadata
+            session = get_db_session()
+            try:
+                record = session.query(ETLMetadata).filter(ETLMetadata.key == "last_full_etl_run").first()
+                if record and record.value:
+                    dt = datetime.fromisoformat(record.value)
+                    return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+            finally:
+                session.close()
+        except Exception:
+            pass
+        return "Unknown"
+    else:
+        try:
+            if os.path.exists("etl_metadata.json"):
+                with open("etl_metadata.json", "r") as f:
+                    data = json.load(f)
+                    ts = data.get("last_full_etl_run")
+                    if ts:
+                        dt = datetime.fromisoformat(ts)
+                        return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        except Exception:
+            pass
+        return "Unknown"
 
 @st.cache_data
 def load_returns_data():
@@ -53,11 +81,14 @@ def load_returns_data():
     return pd.DataFrame()
 
 returns_df = load_returns_data()
-use_case = get_use_case()
+use_case, repo_type = get_use_case()
+last_etl = get_last_etl_timestamp(repo_type)
 
 if returns_df.empty:
     st.error("No historical return data available. Please ensure returns.csv or database connection is initialized.")
     st.stop()
+
+st.caption(f"⚠️ **Disclaimer:** Market data is not live. Last full data update: **{last_etl}**. This model is designed for long-term investment analysis and is not intended for real-time trading.")
 
 all_available_tickers = sorted(returns_df.columns.tolist())
 
