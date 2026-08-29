@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlparse
 from sqlalchemy import create_engine, Column, String, Date, Float, BigInteger, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -6,16 +7,33 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# DB Configuration from environment variables
-DB_USER = os.getenv("POSTGRES_USER", "portfolio_admin")
-DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "secure_portfolio_pwd_2026")
-DB_NAME = os.getenv("POSTGRES_DB", "portfolio_db")
-DB_HOST = os.getenv("DB_HOST", "localhost")  # Use localhost for local, 'db' for docker
-DB_PORT = os.getenv("DB_PORT", "5432")
+def _parse_database_url(url: str) -> dict:
+    parsed = urlparse(url)
+    return {
+        "user": parsed.username,
+        "password": parsed.password,
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "dbname": parsed.path.lstrip("/"),
+    }
+
+if os.getenv("DATABASE_URL"):
+    db_config = _parse_database_url(os.getenv("DATABASE_URL"))
+    DB_USER = db_config["user"]
+    DB_PASSWORD = db_config["password"]
+    DB_HOST = db_config["host"]
+    DB_PORT = str(db_config["port"])
+    DB_NAME = db_config["dbname"]
+else:
+    DB_USER = os.getenv("POSTGRES_USER", "portfolio_admin")
+    DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "secure_portfolio_pwd_2026")
+    DB_NAME = os.getenv("POSTGRES_DB", "portfolio_db")
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_PORT = os.getenv("DB_PORT", "5432")
 
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, connect_args={"connect_timeout": 5})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
