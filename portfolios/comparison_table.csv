@@ -1,0 +1,4 @@
+Model,Exp. Annual Return,Annual Volatility,Annual Variance,Risk Assessment
+Mean Variance (Max Sharpe),24.33%,14.16%,0.020055,Low
+Hierarchical Risk Parity (HRP),10.57%,12.07%,0.014559,Low
+Global Minimum Variance,8.64%,9.40%,0.008836,Low

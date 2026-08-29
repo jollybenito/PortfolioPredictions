@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Environment & Secrets
+.env
+
+# macOS
+.DS_Store
+._*
+
+# Database
+pgdata/
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
