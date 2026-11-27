@@ -19,8 +19,10 @@ def _database_url_from_environment():
         except Exception:
             parsed_url = None
         if parsed_url is not None and _resolved_host(parsed_url.host):
-            if parsed_url.drivername == "postgres":
-                parsed_url = parsed_url.set(drivername="postgresql")
+            if parsed_url.drivername in {"postgres", "postgresql", "postgresql+psycopg"}:
+                # This project installs psycopg2-binary; normalize Railway URLs
+                # that explicitly select psycopg 3 so SQLAlchemy uses that driver.
+                parsed_url = parsed_url.set(drivername="postgresql+psycopg2")
             return parsed_url
 
     pg_user = os.getenv("PGUSER") or os.getenv("POSTGRES_USER", "portfolio_admin")
