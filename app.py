@@ -110,7 +110,7 @@ code,.mono { font-family:"IBM Plex Mono",monospace; }
 
 MAX_ALLOWED_RISK_PCT = 40.0  # 40% risk ceiling rule
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
-MODEL_REFRESH_TIME = time(16, 30)
+MODEL_REFRESH_TIME = time(18, 0)
 
 
 class StaticReturnsRepository:
@@ -217,6 +217,73 @@ def load_political_signals(repo_type: str, as_of: date) -> pd.DataFrame:
         return pd.DataFrame()
     finally:
         session.close()
+
+
+def get_capitol_tracking_summary(repo_type: str, as_of: date, returns: pd.DataFrame) -> dict:
+    """Measure the previous saved signal portfolio over the next snapshot interval."""
+    if repo_type != "sql":
+        return {"status": "unavailable"}
+
+    from database import StockSignal, get_db_session
+
+    session = get_db_session()
+    try:
+        snapshot_dates = [
+            row[0]
+            for row in (
+                session.query(StockSignal.date)
+                .filter(StockSignal.date <= as_of)
+                .distinct()
+                .order_by(StockSignal.date.desc())
+                .limit(2)
+                .all()
+            )
+        ]
+        if not snapshot_dates:
+            any_snapshot = session.query(StockSignal.date).order_by(StockSignal.date.desc()).first()
+            return {"status": "collecting" if any_snapshot else "starting"}
+        if len(snapshot_dates) < 2:
+            return {"status": "tracking", "start_date": snapshot_dates[0]}
+
+        current_snapshot_date, previous_snapshot_date = snapshot_dates
+        signal_rows = (
+            session.query(StockSignal.ticker, StockSignal.signal, StockSignal.net_signal_value)
+            .filter(StockSignal.date == previous_snapshot_date)
+            .all()
+        )
+    except Exception:
+        return {"status": "unavailable"}
+    finally:
+        session.close()
+
+    signals = pd.DataFrame(signal_rows, columns=["ticker", "signal", "net_signal_value"])
+    from src.domain.services.political_portfolio import PoliticalCopyPortfolio
+
+    weights_df = PoliticalCopyPortfolio().generate_copy_weights(signals)
+    if weights_df.empty:
+        return {"status": "no_buys", "start_date": previous_snapshot_date, "end_date": current_snapshot_date}
+
+    weights = weights_df.set_index("ticker")["weight"]
+    start = pd.Timestamp(previous_snapshot_date)
+    end = pd.Timestamp(current_snapshot_date)
+    period_returns = returns.loc[(returns.index > start) & (returns.index <= end)]
+    available_tickers = [ticker for ticker in weights.index if ticker in period_returns.columns]
+    if not available_tickers or period_returns[available_tickers].dropna(how="all").empty:
+        return {"status": "tracking", "start_date": previous_snapshot_date}
+    if any(period_returns[ticker].notna().sum() == 0 for ticker in available_tickers):
+        return {"status": "incomplete", "start_date": previous_snapshot_date, "end_date": current_snapshot_date}
+
+    aligned_weights = weights[available_tickers]
+    aligned_weights = aligned_weights / aligned_weights.sum()
+    asset_returns = (1 + period_returns[available_tickers].fillna(0)).prod() - 1
+    realized_return = float((aligned_weights * asset_returns).sum())
+    return {
+        "status": "measured",
+        "start_date": previous_snapshot_date,
+        "end_date": current_snapshot_date,
+        "return_pct": realized_return * 100,
+        "holdings": len(available_tickers),
+    }
 
 def get_last_etl_timestamp(repo_type: str) -> str:
     if repo_type == "sql":
@@ -536,6 +603,38 @@ if top_model_key:
 else:
     st.warning(f"No models are currently eligible under the {MAX_ALLOWED_RISK_PCT:.0f}% volatility limit and selected filters.")
 
+if selected_horizon == "Medium":
+    tracking = get_capitol_tracking_summary(repo_type, last_refresh_date, model_returns)
+    st.markdown("#### Capitol Trades tracking")
+    if tracking["status"] == "measured":
+        tracking_cols = st.columns(3)
+        tracking_cols[0].metric(
+            f"Realized return · {tracking['start_date']:%b %d} to {tracking['end_date']:%b %d, %Y}",
+            f"{tracking['return_pct']:+.2f}%",
+        )
+        tracking_cols[1].metric("Holdings tracked", str(tracking["holdings"]))
+        tracking_cols[2].metric("Next model refresh", f"{next_refresh_date:%b %d, %Y}")
+    elif tracking["status"] == "no_buys":
+        st.info(
+            f"No buy signals were present in the prior saved snapshot ({tracking['start_date']:%b %d, %Y}); "
+            "there is no Capitol Trades portfolio return to measure for this interval."
+        )
+    elif tracking["status"] == "incomplete":
+        st.info("Price history is incomplete for one or more holdings in the prior Capitol Trades snapshot.")
+    elif tracking["status"] == "tracking":
+        st.info(
+            f"Capitol Trades tracking began on {tracking['start_date']:%b %d, %Y}. "
+            "Realized performance will appear after a later monthly snapshot."
+        )
+    elif tracking["status"] == "unavailable":
+        st.info("Capitol Trades tracking requires the connected PostgreSQL signal history.")
+    else:
+        st.info(
+            f"Point-in-time collection is starting. The first Capitol Trades portfolio snapshot is scheduled "
+            f"for the next medium refresh on {next_refresh_date:%b %d, %Y}; its realized return will be measured "
+            "after the following monthly snapshot."
+        )
+
 # ---------------------------------------------------------
 # Display: Model Ranking & Comparison Table
 # ---------------------------------------------------------
@@ -552,15 +651,23 @@ summary_rows = []
 for strategy_key, info in visible_strategies.items():
     result = model_results.get(strategy_key, {})
     if "error" in result:
+        political_data_pending = (
+            strategy_key == "political"
+            and "No Capitol Trades signals are available" in result["error"]
+        )
         summary_rows.append({
-            "Recommendation": "❌ Error",
+            "Recommendation": "⏳ Tracking" if political_data_pending else "❌ Error",
             "Model": f"{info['icon']} {info['name']}",
             "Est. Annual Profit": "—",
             "Expected Return": "—",
             "Annual Volatility (Risk)": "—",
             "Risk Assessment": "—",
             selected_metric_name: "—",
-            "Action Status": f"Error: {result['error'][:100]}"
+            "Action Status": (
+                f"First point-in-time snapshot is scheduled for {next_refresh_date:%b %d, %Y}"
+                if political_data_pending
+                else f"Error: {result['error'][:100]}"
+            )
         })
     elif result.get("is_discarded", False):
         metrics = result["metrics"]
@@ -618,8 +725,19 @@ for rank, (strategy_key, _, is_discarded_or_error) in enumerate(sorted_models, 1
     result = model_results.get(strategy_key, {})
 
     if "error" in result:
-        with st.expander(f"❌ {info['icon']} {info['name']} — Error", expanded=False):
-            st.error(result["error"])
+        political_data_pending = (
+            strategy_key == "political"
+            and "No Capitol Trades signals are available" in result["error"]
+        )
+        model_state = "⏳ Tracking" if political_data_pending else "❌ Error"
+        with st.expander(f"{model_state} {info['icon']} {info['name']}", expanded=False):
+            if political_data_pending:
+                st.info(
+                    f"Collection starts with the first saved point-in-time snapshot. "
+                    f"The first model snapshot is scheduled for {next_refresh_date:%b %d, %Y}."
+                )
+            else:
+                st.error(result["error"])
         continue
 
     metrics = result["metrics"]

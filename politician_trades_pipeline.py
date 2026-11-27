@@ -1,10 +1,9 @@
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from sqlalchemy import text
-from database import engine, init_db, SenatorTrade, SenatorScore, StockSignal
-from db_upsert import save_to_db_upsert
+from datetime import date, datetime, timedelta
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from database import engine, init_db, StockSignal
 import os
 import time
 
@@ -14,7 +13,6 @@ import time
 DATA_SOURCE_URL = "https://raw.githubusercontent.com/timothycarambat/senate-stock-watcher-data/master/aggregate/all_transactions.json"
 LOOKBACK_YEARS = 2
 SIGNAL_DECAY_DAYS = 30
-PURGE_ON_RUN = True
 
 # Helper to map amount strings to midpoints
 AMOUNT_MAP = {
@@ -31,7 +29,7 @@ AMOUNT_MAP = {
     "Unknown": 1000
 }
 
-def fetch_and_purge():
+def fetch_and_store():
     print("Fetching Senate trades from Github mirror...")
     
     # Retry logic for network issues
@@ -60,28 +58,33 @@ def fetch_and_purge():
     df['date'] = pd.to_datetime(df['transaction_date']).dt.date
     
     init_db()
-    if PURGE_ON_RUN:
-        print("Purging old trade data...")
-        with engine.connect() as conn:
-            conn.execute(text("TRUNCATE TABLE senator_trades RESTART IDENTITY"))
-            conn.commit()
-            
-    # Save to DB
-    to_save = df[['senator', 'ticker', 'date', 'type', 'amount_midpoint']]
-    to_save.to_sql('senator_trades', engine, if_exists='append', index=False)
-    print(f"Imported {len(to_save)} trades.")
+    # Append newly disclosed trades while preserving prior raw records.
+    trade_columns = ['senator', 'ticker', 'date', 'type', 'amount_midpoint']
+    to_save = df[trade_columns].drop_duplicates(subset=trade_columns)
+    existing = pd.read_sql(f"SELECT {', '.join(trade_columns)} FROM senator_trades", engine)
+    previously_stored = len(existing)
+    if not existing.empty:
+        existing['date'] = pd.to_datetime(existing['date']).dt.date
+        existing_keys = set(map(tuple, existing[trade_columns].itertuples(index=False, name=None)))
+        incoming_keys = to_save[trade_columns].itertuples(index=False, name=None)
+        to_save = to_save.loc[[key not in existing_keys for key in incoming_keys]]
+    if not to_save.empty:
+        to_save.to_sql('senator_trades', engine, if_exists='append', index=False)
+    print(f"Collected {len(to_save)} new trades; {previously_stored} trades were already stored.")
     return df
 
-def score_senators():
+def score_senators(as_of: date):
     print("Scoring politicians...")
     # 1. Load prices to calculate returns
     prices_df = pd.read_sql("SELECT ticker, date, close FROM stock_prices", engine)
     prices_df['date'] = pd.to_datetime(prices_df['date']).dt.date
+    prices_df = prices_df[prices_df['date'] <= as_of]
     prices_df = prices_df.pivot(index='date', columns='ticker', values='close')
     
     # 2. Load trades
     trades = pd.read_sql("SELECT * FROM senator_trades WHERE type IN ('Purchase', 'Sale Full', 'Sale Partial')", engine)
     trades['date'] = pd.to_datetime(trades['date']).dt.date
+    trades = trades[trades['date'] <= as_of]
     
     scores = []
     senators = trades['senator'].unique()
@@ -115,20 +118,29 @@ def score_senators():
             'consistency_factor': const_fact,
             'activity_factor': act_fact,
             'final_score': final_score,
-            'last_updated': datetime.now().date()
+            'last_updated': as_of
         })
         
-    score_df = pd.DataFrame(scores)
+    score_df = pd.DataFrame(
+        scores,
+        columns=[
+            'senator', 'historical_return', 'consistency_factor',
+            'activity_factor', 'final_score', 'last_updated',
+        ],
+    )
     score_df.to_sql('senator_scores', engine, if_exists='replace', index=False)
     print(f"Scored {len(score_df)} senators.")
     return score_df
 
-def generate_signals():
+def generate_signals(as_of: date):
     print("Generating stock signals...")
     # Load scores and recent trades
     scores = pd.read_sql("SELECT senator, final_score FROM senator_scores", engine).set_index('senator')
-    cutoff = datetime.now().date() - timedelta(days=365) # 1 year lookback
-    trades = pd.read_sql(f"SELECT * FROM senator_trades WHERE date >= '{cutoff}'", engine)
+    cutoff = as_of - timedelta(days=365) # 1 year lookback
+    trades = pd.read_sql(
+        f"SELECT * FROM senator_trades WHERE date >= '{cutoff}' AND date <= '{as_of}'",
+        engine,
+    )
     trades['date'] = pd.to_datetime(trades['date']).dt.date
     
     # Filter trades to only those in our universe
@@ -145,7 +157,7 @@ def generate_signals():
     
     tickers = trades['ticker'].unique()
     signals = []
-    today = datetime.now().date()
+    today = as_of
     
     for ticker in tickers:
         t_trades = trades[trades['ticker'] == ticker]
@@ -188,16 +200,27 @@ def generate_signals():
         
     signal_df = pd.DataFrame(signals)
     if not signal_df.empty:
-        save_to_db_upsert(signal_df, 'stock_signals', engine, ['ticker', 'date'])
+        statement = pg_insert(StockSignal).values(signal_df.to_dict(orient="records"))
+        statement = statement.on_conflict_do_update(
+            index_elements=[StockSignal.ticker, StockSignal.date],
+            set_={
+                "signal": statement.excluded.signal,
+                "net_signal_value": statement.excluded.net_signal_value,
+                "risk_score": statement.excluded.risk_score,
+            },
+        )
+        with engine.begin() as connection:
+            connection.execute(statement)
         print(f"Generated and synced signals for {len(signal_df)} tickers.")
     else:
         print("No signals generated.")
     return signal_df
 
-def main():
-    fetch_and_purge()
-    score_senators()
-    generate_signals()
+def main(as_of: date = None):
+    as_of = as_of or datetime.now().date()
+    fetch_and_store()
+    score_senators(as_of)
+    return generate_signals(as_of)
 
 if __name__ == "__main__":
     main()
