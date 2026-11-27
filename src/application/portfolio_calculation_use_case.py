@@ -42,7 +42,8 @@ class PortfolioCalculationUseCase:
         excluded_sectors: Optional[List[str]] = None,
         excluded_exchanges: Optional[List[str]] = None,
         max_pe_ratio: Optional[float] = None,
-        metric: str = "sharpe"  # "sharpe", "sortino", or "treynor"
+        metric: str = "sharpe",  # "sharpe", "sortino", or "treynor"
+        political_signals_df: Optional[pd.DataFrame] = None,
     ) -> Dict:
         # Validate budget boundaries
         if budget < self.MIN_BUDGET or budget > self.MAX_BUDGET:
@@ -111,11 +112,14 @@ class PortfolioCalculationUseCase:
             weights = self.min_var_service.optimize(cov)
 
         elif strategy == "political":
-            dummy_signals = pd.DataFrame([
-                {"ticker": col, "signal": "BUY", "net_signal_value": np.random.uniform(0.5, 2.0)}
-                for col in returns_df.columns[:10]
-            ])
-            w_df = self.political_service.generate_copy_weights(dummy_signals)
+            if political_signals_df is None or political_signals_df.empty:
+                raise ValueError("No Capitol Trades signals are available for this model refresh date.")
+            eligible_signals = political_signals_df[
+                political_signals_df["ticker"].isin(returns_df.columns)
+            ]
+            w_df = self.political_service.generate_copy_weights(eligible_signals)
+            if w_df.empty:
+                raise ValueError("No investable Capitol Trades buy signals match the selected assets.")
             weights = dict(zip(w_df['ticker'], w_df['weight']))
 
         elif strategy in ["sovereign_stability", "macro_stability"]:
