@@ -4,6 +4,7 @@ import numpy as np
 
 from src.domain.services.hrp_optimizer import RiskTargetedHRP
 from src.domain.services.mean_variance_optimizer import MeanVarianceOptimizer
+from src.domain.services.min_variance_optimizer import MinimumVarianceOptimizer
 from src.domain.services.political_portfolio import PoliticalCopyPortfolio
 from src.domain.services.macro_stability_engine import SovereignStabilityEngine
 from src.domain.models.country_stability import SovereignPillars
@@ -27,6 +28,7 @@ class PortfolioCalculationUseCase:
         self.stock_repo = stock_repo
         self.hrp_service = RiskTargetedHRP()
         self.mean_var_service = MeanVarianceOptimizer()
+        self.min_var_service = MinimumVarianceOptimizer()
         self.political_service = PoliticalCopyPortfolio()
         self.sovereign_engine = SovereignStabilityEngine()
 
@@ -100,9 +102,13 @@ class PortfolioCalculationUseCase:
             gamma = float(np.clip(30.0 / target_risk_pct, 0.2, 3.5))
             weights = self.hrp_service.optimize(returns_df, gamma=gamma)
 
-        elif strategy in ["mean_variance", "min_variance"]:
+        elif strategy == "mean_variance":
             cov = returns_df.cov() * 252
             weights = self.mean_var_service.optimize(returns_df, cov)
+
+        elif strategy == "min_variance":
+            cov = returns_df.cov() * 252
+            weights = self.min_var_service.optimize(cov)
 
         elif strategy == "political":
             dummy_signals = pd.DataFrame([

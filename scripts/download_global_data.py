@@ -1,8 +1,12 @@
 import os
 import sys
-import numpy as np
 import pandas as pd
 import yfinance as yf
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.adapters.providers.yfinance_adapter import YFinanceAdapter
+from src.domain.models.currency import currency_for_ticker, prices_to_usd_returns
 
 # Global tickers grouped by Exchange / Country
 GLOBAL_TICKERS = {
@@ -123,7 +127,7 @@ def main():
     tickers_list = list(GLOBAL_TICKERS.keys())
     
     start_date = "2015-11-01"
-    end_date = "2026-06-06"
+    end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
     
     # Download adj close
     df_raw = yf.download(tickers_list, start=start_date, end=end_date, progress=True, auto_adjust=False)
@@ -138,18 +142,29 @@ def main():
         data = data.to_frame()
 
     # Drop columns with > 50% missing values
-    valid_data = data.dropna(thresh=int(len(data) * 0.5), axis=1)
-    # Forward fill then backward fill remaining small gaps
-    valid_data = valid_data.ffill().bfill()
+    valid_data = data.dropna(thresh=int(len(data) * 0.5), axis=1).ffill()
+    valid_data.index = pd.to_datetime(valid_data.index).tz_localize(None).normalize()
 
-    # Calculate log returns
-    log_returns = np.log(valid_data / valid_data.shift(1)).dropna()
-    log_returns.index = log_returns.index.strftime('%Y-%m-%d')
-    log_returns.index.name = "date"
+    adapter = YFinanceAdapter()
+    currencies = sorted({currency_for_ticker(ticker) for ticker in valid_data.columns} - {"USD"})
+    fx_records = []
+    for currency in currencies:
+        rates = adapter.fetch_historical_fx_rates(currency, start_date, end_date)
+        if not rates:
+            raise RuntimeError(f"No FX history returned for {currency}; refusing to write mixed-currency returns.")
+        fx_records.extend(rates)
+    fx_data = pd.DataFrame([rate.__dict__ for rate in fx_records])
+    fx_panel = fx_data.pivot(index="date", columns="currency", values="usd_per_unit") if not fx_data.empty else pd.DataFrame()
 
-    # Save to returns.csv
-    log_returns.to_csv("returns.csv")
-    print(f"Successfully updated returns.csv! New dimensions: {log_returns.shape}")
+    spy = yf.Ticker("SPY").history(start=start_date, end=end_date, auto_adjust=True)
+    if spy.empty:
+        raise RuntimeError("Could not fetch SPY dates to define the common US trading calendar.")
+    trading_calendar = pd.to_datetime(spy.index).tz_localize(None).normalize()
+
+    usd_returns = prices_to_usd_returns(valid_data, fx_panel, trading_calendar=trading_calendar)
+    usd_returns.index.name = "date"
+    usd_returns.to_csv("returns.csv")
+    print(f"Successfully updated USD-denominated returns.csv! New dimensions: {usd_returns.shape}")
 
 if __name__ == "__main__":
     main()

@@ -17,3 +17,9 @@ class DelistedTicker:
     ticker: str
     reason: str
     date_added: date
+
+@dataclass(frozen=True)
+class FXRate:
+    currency: str
+    date: date
+    usd_per_unit: float

@@ -1,41 +1,21 @@
 import pandas as pd
-import numpy as np
-import os
 from sklearn.covariance import LedoitWolf
-from database import engine, get_db_session, StockPrice, CovarianceMatrix
+from database import engine
 from db_upsert import save_to_db_upsert
+from src.adapters.persistence.sql_repository import SQLStockPriceRepository
 
 def compute_variance():
-    print("Fetching data from database...")
-    
-    # Query all prices focusing on ticker, date, and close
-    query = "SELECT ticker, date, close FROM stock_prices ORDER BY date ASC"
-    df = pd.read_sql(query, engine)
-    
-    if df.empty:
-        print("ERROR: No data found in database. Run the ETL pipeline or migration first.")
+    print("Fetching USD returns from PostgreSQL...")
+    returns_df = SQLStockPriceRepository().get_returns_df()
+
+    if returns_df.empty:
+        print("ERROR: No complete USD return history found. Run the ETL pipeline and populate FX rates first.")
         return
 
-    # Convert date to datetime
-    df['date'] = pd.to_datetime(df['date'])
-    last_date = df['date'].max().date()
-    
-    # Pivot the data to get dates as index and tickers as columns
-    print("Pivoting data...")
-    price_df = df.pivot(index='date', columns='ticker', values='close')
-    price_df.sort_index(inplace=True)
-    
-    # Handle missing values
-    price_df.ffill(inplace=True)
-    
-    # Cleaning
-    price_df.dropna(axis=1, thresh=int(len(price_df) * 0.9), inplace=True)
-    price_df.dropna(inplace=True)
-    
-    print(f"Final data rows: {len(price_df)} | Final stocks: {price_df.shape[1]}")
-    
-    # Calculate Log Returns
-    returns_df = np.log(price_df / price_df.shift(1)).dropna()
+    last_date = pd.to_datetime(returns_df.index.max()).date()
+    print(f"Final data rows: {len(returns_df)} | Final stocks: {returns_df.shape[1]}")
+
+    # The SQL repository returns simple USD returns on the US trading calendar.
     returns_df.to_csv('returns.csv')
     
     # helper to save matrix to DB

@@ -3,7 +3,8 @@ from typing import List
 import yfinance as yf
 import pandas as pd
 
-from src.domain.models.stock_price import StockPrice
+from src.domain.models.stock_price import FXRate, StockPrice
+from src.domain.models.currency import FX_TICKERS
 from src.ports.repositories import MarketDataProvider
 
 class YFinanceAdapter(MarketDataProvider):
@@ -32,6 +33,29 @@ class YFinanceAdapter(MarketDataProvider):
                 )
             )
         return prices
+
+    def fetch_historical_fx_rates(self, currency: str, start_date: str, end_date: str) -> List[FXRate]:
+        if currency not in FX_TICKERS:
+            raise ValueError(f"No Yahoo Finance FX ticker configured for {currency}.")
+        symbol, invert = FX_TICKERS[currency]
+        history = yf.Ticker(symbol).history(start=start_date, end=end_date, auto_adjust=True)
+        if history.empty:
+            return []
+        close = history["Close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        if invert:
+            close = 1 / close
+        rates = []
+        for timestamp, value in close.dropna().items():
+            if float(value) <= 0:
+                continue
+            rates.append(FXRate(
+                currency=currency,
+                date=pd.Timestamp(timestamp).date(),
+                usd_per_unit=float(value),
+            ))
+        return rates
 
     def check_delisted(self, ticker: str) -> bool:
         t_obj = yf.Ticker(ticker)

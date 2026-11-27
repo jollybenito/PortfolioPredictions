@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 import subprocess
 from sqlalchemy import func, text
 from database import init_db, get_db_session, StockPrice, engine, DelistedTicker, ETLMetadata
+from src.application.etl_use_case import is_already_up_to_date
+from src.adapters.persistence.sql_repository import SQLFXRateRepository
+from src.adapters.providers.yfinance_adapter import YFinanceAdapter
+from src.domain.models.currency import currency_for_ticker
 
 # ----------------------------
 # CONFIG
@@ -48,6 +52,27 @@ china_tickers = [
 
 all_tickers = us_tickers + china_tickers + ["SPY"]
 
+
+def sync_fx_rates(tickers):
+    session = get_db_session()
+    try:
+        stored_tickers = {row[0] for row in session.query(StockPrice.ticker).distinct().all()}
+    finally:
+        session.close()
+    currencies = sorted({currency_for_ticker(ticker) for ticker in set(tickers) | stored_tickers} - {"USD"})
+    repository = SQLFXRateRepository()
+    provider = YFinanceAdapter()
+    end_date = datetime.now().strftime('%Y-%m-%d')
+
+    for currency in currencies:
+        latest_date = repository.get_latest_date(currency)
+        start_date = (latest_date - timedelta(days=7)).strftime('%Y-%m-%d') if latest_date else "2015-01-01"
+        rates = provider.fetch_historical_fx_rates(currency, start_date, end_date)
+        if not rates:
+            raise RuntimeError(f"No FX history returned for {currency}; stopping ETL to avoid mixed-currency returns.")
+        saved = repository.save_fx_rates(rates)
+        print(f"Updated {saved} {currency}/USD FX observations from {start_date}.")
+
 def get_latest_date_db(session, ticker):
     try:
         latest_date = session.query(func.max(StockPrice.date)).filter(StockPrice.ticker == ticker).scalar()
@@ -55,43 +80,6 @@ def get_latest_date_db(session, ticker):
     except Exception as e:
         print(f"Error querying latest date for {ticker}: {e}")
         return None
-
-def is_already_up_to_date(latest_date):
-    """
-    Heuristic to check if the data is already up to the latest possible trading day.
-    """
-    if not latest_date: 
-        return False
-    
-    now = datetime.now()
-    today = now.date()
-    
-    # If we already have today's date, we are definitely up to date
-    if latest_date >= today:
-        return True
-        
-    # If it's the weekend (Saturday=5, Sunday=6)
-    weekday = now.weekday()
-    if weekday == 5: # Saturday
-        # If we have Friday (yesterday), we are up to date
-        if latest_date >= (today - timedelta(days=1)):
-            return True
-    elif weekday == 6: # Sunday
-        if latest_date >= (today - timedelta(days=2)):
-            return True
-    elif weekday == 0: # Monday
-        # Before market open/update on Monday, Friday (3 days ago) is sufficient
-        if now.hour < 16: # Assume market data isn't ready until late afternoon
-            if latest_date >= (today - timedelta(days=3)):
-                return True
-            
-    # Simple check for 'before market open' - if it's before 7 AM local time, 
-    # we might not expect today's data yet and consider yesterday's sufficient
-    if now.hour < 7:
-        if latest_date >= (today - timedelta(days=1)):
-            return True
-            
-    return False
 
 def download_and_save_db(ticker, start_date):
     session = get_db_session()
@@ -188,6 +176,8 @@ def main():
     print(f"DB-Based ETL Pipeline started at {start_time}")
     
     init_db()
+    print("Updating FX rates before local-currency stock prices...")
+    sync_fx_rates(all_tickers)
     session = get_db_session()
     
     # User requested removal of MMC/MCC due to invalidity

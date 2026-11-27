@@ -5,6 +5,25 @@ from typing import List
 from src.domain.models.stock_price import DelistedTicker
 from src.ports.repositories import StockPriceRepository, DelistedTickerRepository, MarketDataProvider
 
+
+def is_already_up_to_date(latest_date) -> bool:
+    """Return whether the latest stored date is recent enough for today's market calendar."""
+    if not latest_date:
+        return False
+    now = datetime.now()
+    today = now.date()
+    if latest_date >= today:
+        return True
+    weekday = now.weekday()
+    if weekday == 5 and latest_date >= (today - timedelta(days=1)):
+        return True
+    if weekday == 6 and latest_date >= (today - timedelta(days=2)):
+        return True
+    if weekday == 0 and now.hour < 16 and latest_date >= (today - timedelta(days=3)):
+        return True
+    return now.hour < 7 and latest_date >= (today - timedelta(days=1))
+
+
 class MarketDataSyncUseCase:
     def __init__(
         self,
@@ -19,22 +38,7 @@ class MarketDataSyncUseCase:
         self.sleep_between_requests = sleep_between_requests
 
     def is_already_up_to_date(self, latest_date) -> bool:
-        if not latest_date:
-            return False
-        now = datetime.now()
-        today = now.date()
-        if latest_date >= today:
-            return True
-        weekday = now.weekday()
-        if weekday == 5 and latest_date >= (today - timedelta(days=1)):
-            return True
-        if weekday == 6 and latest_date >= (today - timedelta(days=2)):
-            return True
-        if weekday == 0 and now.hour < 16 and latest_date >= (today - timedelta(days=3)):
-            return True
-        if now.hour < 7 and latest_date >= (today - timedelta(days=1)):
-            return True
-        return False
+        return is_already_up_to_date(latest_date)
 
     def execute(self, tickers: List[str], purge_invalid: List[str] = None):
         if purge_invalid:

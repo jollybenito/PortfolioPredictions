@@ -18,6 +18,10 @@ class MeanVarianceOptimizer(PortfolioOptimizer):
         S = cov_matrix.loc[common_tickers, common_tickers]
 
         ef = EfficientFrontier(mu, S)
-        weights = ef.max_sharpe()
-        cleaned_weights = ef.clean_weights(cutoff=self.min_weight)
-        return cleaned_weights
+        ef.max_sharpe()
+        cleaned_weights = pd.Series(ef.clean_weights(cutoff=self.min_weight), dtype=float)
+        cleaned_weights = cleaned_weights[cleaned_weights > 0]
+        total_weight = float(cleaned_weights.sum())
+        if total_weight <= 0:
+            raise ValueError("Mean-variance optimization produced no investable weights.")
+        return (cleaned_weights / total_weight).to_dict()

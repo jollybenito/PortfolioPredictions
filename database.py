@@ -1,37 +1,50 @@
 import os
-from urllib.parse import urlparse
 from sqlalchemy import create_engine, Column, String, Date, Float, BigInteger, UniqueConstraint
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def _parse_database_url(url: str) -> dict:
-    parsed = urlparse(url)
-    return {
-        "user": parsed.username,
-        "password": parsed.password,
-        "host": parsed.hostname,
-        "port": parsed.port or 5432,
-        "dbname": parsed.path.lstrip("/"),
-    }
+def _resolved_host(host: str) -> bool:
+    return bool(host and not any(char in host for char in "{}$<> \t\r\n"))
 
-if os.getenv("DATABASE_URL"):
-    db_config = _parse_database_url(os.getenv("DATABASE_URL"))
-    DB_USER = db_config["user"]
-    DB_PASSWORD = db_config["password"]
-    DB_HOST = db_config["host"]
-    DB_PORT = str(db_config["port"])
-    DB_NAME = db_config["dbname"]
-else:
-    DB_USER = os.getenv("POSTGRES_USER", "portfolio_admin")
-    DB_PASSWORD = os.getenv("POSTGRES_PASSWORD", "secure_portfolio_pwd_2026")
-    DB_NAME = os.getenv("POSTGRES_DB", "portfolio_db")
-    DB_HOST = os.getenv("DB_HOST", "localhost")
-    DB_PORT = os.getenv("DB_PORT", "5432")
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+def _database_url_from_environment():
+    configured_url = os.getenv("DATABASE_URL")
+    if configured_url:
+        try:
+            parsed_url = make_url(configured_url)
+        except Exception:
+            parsed_url = None
+        if parsed_url is not None and _resolved_host(parsed_url.host):
+            if parsed_url.drivername == "postgres":
+                parsed_url = parsed_url.set(drivername="postgresql")
+            return parsed_url
+
+    pg_user = os.getenv("PGUSER") or os.getenv("POSTGRES_USER", "portfolio_admin")
+    pg_password = os.getenv("PGPASSWORD") or os.getenv("POSTGRES_PASSWORD")
+    pg_database = os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB", "portfolio_db")
+    pg_host = os.getenv("PGHOST") or os.getenv("DB_HOST", "localhost")
+    pg_port = os.getenv("PGPORT") or os.getenv("DB_PORT", "5432")
+
+    if not _resolved_host(pg_host):
+        raise ValueError("PostgreSQL host is unresolved. Set DATABASE_URL or PGHOST to an actual hostname.")
+    if not pg_password:
+        raise ValueError("PostgreSQL password is missing. Set PGPASSWORD or POSTGRES_PASSWORD.")
+
+    return URL.create(
+        "postgresql+psycopg2",
+        username=pg_user,
+        password=pg_password,
+        host=pg_host,
+        port=int(pg_port),
+        database=pg_database,
+    )
+
+
+DATABASE_URL = _database_url_from_environment()
 
 engine = create_engine(DATABASE_URL, connect_args={"connect_timeout": 5})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -47,6 +60,12 @@ class StockPrice(Base):
     open = Column(Float)
     volume = Column(BigInteger)
     __table_args__ = (UniqueConstraint('ticker', 'date', name='uq_ticker_date'),)
+
+class FXRate(Base):
+    __tablename__ = "fx_rates"
+    currency = Column(String, primary_key=True)
+    date = Column(Date, primary_key=True)
+    usd_per_unit = Column(Float, nullable=False)
 
 class PortfolioWeight(Base):
     __tablename__ = "portfolio_weights"

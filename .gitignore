@@ -15,6 +15,15 @@ __pycache__/
 # Database
 pgdata/
 
+# Generated market data and analysis outputs (rebuild from PostgreSQL)
+returns.csv
+sample_covariance.csv
+ledoit_wolf_covariance.csv
+portfolio_comparison.png
+portfolios/*_weights.csv
+portfolios/comparison_table.csv
+portfolios/return_predictions.png
+
 # Logs
 *.log
 

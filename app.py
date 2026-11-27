@@ -1,19 +1,15 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
 import os
 import sys
-import json
 from datetime import datetime
 
 # Ensure src modules can be resolved
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.application.portfolio_calculation_use_case import PortfolioCalculationUseCase
-from src.domain.services.hrp_optimizer import RiskTargetedHRP
-from src.domain.models.stock_metadata import get_metadata, TICKER_METADATA_REGISTRY
+from src.domain.models.stock_metadata import get_metadata
 
 # ---------------------------------------------------------
 # Streamlit Page Configuration
@@ -35,60 +31,41 @@ Set your investment budget, choose a portfolio strategy, adjust risk tolerance, 
 # Load Data & Dependencies
 # ---------------------------------------------------------
 def get_use_case():
-    """Auto-detect environment: use CSV repo on Streamlit Cloud, SQL locally."""
+    """Build the application against its PostgreSQL-backed repository."""
+    from src.adapters.persistence.sql_repository import SQLStockPriceRepository
+    repo = SQLStockPriceRepository()
+    return PortfolioCalculationUseCase(stock_repo=repo), "sql"
+
+def get_last_etl_timestamp() -> str:
     try:
-        from src.adapters.persistence.sql_repository import SQLStockPriceRepository
-        repo = SQLStockPriceRepository()
-        repo.get_returns_df()
-        return PortfolioCalculationUseCase(stock_repo=repo), "sql"
-    except Exception:
-        from src.adapters.persistence.csv_repository import CSVStockPriceRepository
-        repo = CSVStockPriceRepository(csv_path="returns.csv")
-        return PortfolioCalculationUseCase(stock_repo=repo), "csv"
-
-def get_last_etl_timestamp(repo_type: str) -> str:
-    if repo_type == "sql":
+        from database import get_db_session, ETLMetadata
+        session = get_db_session()
         try:
-            from database import get_db_session, ETLMetadata
-            session = get_db_session()
-            try:
+            record = session.query(ETLMetadata).filter(ETLMetadata.key == "daily_market_update").first()
+            if not record:
                 record = session.query(ETLMetadata).filter(ETLMetadata.key == "last_full_etl_run").first()
-                if record and record.value:
-                    dt = datetime.fromisoformat(record.value)
-                    return dt.strftime("%B %d, %Y at %I:%M %p UTC")
-            finally:
-                session.close()
-        except Exception:
-            pass
-        return "Unknown"
-    else:
-        try:
-            if os.path.exists("etl_metadata.json"):
-                with open("etl_metadata.json", "r") as f:
-                    data = json.load(f)
-                    ts = data.get("last_full_etl_run")
-                    if ts:
-                        dt = datetime.fromisoformat(ts)
-                        return dt.strftime("%B %d, %Y at %I:%M %p UTC")
-        except Exception:
-            pass
-        return "Unknown"
+            if record and record.value:
+                dt = datetime.fromisoformat(record.value)
+                return dt.strftime("%B %d, %Y at %I:%M %p UTC")
+        finally:
+            session.close()
+    except Exception:
+        pass
+    return "Unknown"
 
-@st.cache_data
-def load_returns_data():
-    if os.path.exists('returns.csv'):
-        return pd.read_csv('returns.csv', index_col=0, parse_dates=True)
-    return pd.DataFrame()
-
-returns_df = load_returns_data()
-use_case, repo_type = get_use_case()
-last_etl = get_last_etl_timestamp(repo_type)
+use_case, _ = get_use_case()
+try:
+    returns_df = use_case.stock_repo.get_returns_df()
+except Exception as exc:
+    st.error(f"Could not load market data from PostgreSQL: {exc}")
+    st.stop()
+last_etl = get_last_etl_timestamp()
 
 if returns_df.empty:
-    st.error("No historical return data available. Please ensure returns.csv or database connection is initialized.")
+    st.error("No historical return data available. Please initialize PostgreSQL and run the market data ETL pipeline.")
     st.stop()
 
-st.caption(f"⚠️ **Disclaimer:** Market data is not live. Last full data update: **{last_etl}**. This model is designed for long-term investment analysis and is not intended for real-time trading.")
+st.caption(f"⚠️ **Disclaimer:** Market data is not live. Last market data update: **{last_etl}**. This model is designed for long-term investment analysis and is not intended for real-time trading.")
 
 all_available_tickers = sorted(returns_df.columns.tolist())
 

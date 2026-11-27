@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from pypfopt.efficient_frontier import EfficientFrontier
-from pypfopt import risk_models
 from pypfopt import expected_returns
 import os
 import sys
