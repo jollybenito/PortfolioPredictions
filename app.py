@@ -577,7 +577,8 @@ for strategy_key, info in visible_strategies.items():
         })
     else:
         metrics = result["metrics"]
-        risk_label, _ = classify_risk(metrics["volatility_pct"])
+        vol = metrics["volatility_pct"]
+        risk_label, _ = classify_risk(vol)
         is_top = (strategy_key == top_model_key)
         rec_tag = "🥇 #1 Top Recommendation" if is_top else "✅ Eligible"
         
